@@ -147,6 +147,27 @@ class CourseLibrary private constructor(
 
     fun isPinned(courseId: String): Boolean = courseId in state.pinned
 
+    /** Persist a user-defined card order. Pinned courses remain grouped at
+     *  the front, but can also be reordered relative to other pinned cards. */
+    suspend fun movePackage(movingId: String, targetId: String) {
+        if (movingId == targetId) return
+        val current = state.packages.toMutableList()
+        val from = current.indexOfFirst { it.id == movingId }
+        val target = current.indexOfFirst { it.id == targetId }
+        if (from < 0 || target < 0) return
+        val moving = current.removeAt(from)
+        current.add(target.coerceAtMost(current.size), moving)
+
+        val pinned = state.pinned.toMutableList()
+        if (movingId in pinned && targetId in pinned) {
+            val pinnedTarget = pinned.indexOf(targetId)
+            pinned.remove(movingId)
+            pinned.add(pinnedTarget.coerceAtMost(pinned.size), movingId)
+        }
+        stateFlow.value = state.copy(packages = current, pinned = pinned)
+        persist()
+    }
+
     /** Read a logical-path resource as text. Returns null if not imported. */
     suspend fun loadString(logicalPath: String): String? = withContext(Dispatchers.IO) {
         val p = resolveLogicalPath(logicalPath) ?: return@withContext null

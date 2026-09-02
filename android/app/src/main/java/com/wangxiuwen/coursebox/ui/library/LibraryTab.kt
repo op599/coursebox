@@ -4,7 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items as lazyItems
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -31,13 +32,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.navigation.NavHostController
 import com.wangxiuwen.coursebox.BuildConfig
 import com.wangxiuwen.coursebox.core.CourseLibrary
@@ -75,6 +79,10 @@ fun LibraryTab(
     var updateFound by remember { mutableStateOf<UpdateAvailable?>(null) }
     var noUpdate by remember { mutableStateOf(false) }
     var downloading by remember { mutableStateOf(false) }
+    var draggedCourseId by remember { mutableStateOf<String?>(null) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var dropTargetId by remember { mutableStateOf<String?>(null) }
+    val courseGridState = rememberLazyGridState()
 
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -312,6 +320,7 @@ fun LibraryTab(
                 // phones at 2 columns and lets a 10" tablet land on 6-8.
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 160.dp),
+                    state = courseGridState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
                         start = 12.dp, end = 12.dp, top = 6.dp, bottom = 130.dp,
@@ -320,7 +329,60 @@ fun LibraryTab(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(sorted, key = { it.id }) { pkg ->
+                        val dragging = draggedCourseId == pkg.id
+                        val dragModifier = if (query.isBlank()) {
+                            Modifier
+                                .zIndex(if (dragging) 2f else 0f)
+                                .graphicsLayer {
+                                    if (dragging) {
+                                        translationX = dragOffset.x
+                                        translationY = dragOffset.y
+                                        scaleX = 1.04f
+                                        scaleY = 1.04f
+                                        alpha = 0.92f
+                                    }
+                                }
+                                .pointerInput(pkg.id) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            draggedCourseId = pkg.id
+                                            dragOffset = Offset.Zero
+                                            dropTargetId = null
+                                        },
+                                        onDragCancel = {
+                                            draggedCourseId = null
+                                            dragOffset = Offset.Zero
+                                            dropTargetId = null
+                                        },
+                                        onDragEnd = {
+                                            val target = dropTargetId
+                                            draggedCourseId = null
+                                            dragOffset = Offset.Zero
+                                            dropTargetId = null
+                                            if (target != null && target != pkg.id) {
+                                                scope.launch { library.movePackage(pkg.id, target) }
+                                            }
+                                        },
+                                        onDrag = { change, amount ->
+                                            change.consume()
+                                            dragOffset += amount
+                                            val visible = courseGridState.layoutInfo.visibleItemsInfo
+                                            val origin = visible.firstOrNull { it.key == pkg.id }
+                                            if (origin != null) {
+                                                val x = origin.offset.x + origin.size.width / 2f + dragOffset.x
+                                                val y = origin.offset.y + origin.size.height / 2f + dragOffset.y
+                                                dropTargetId = visible.minByOrNull { item ->
+                                                    val dx = item.offset.x + item.size.width / 2f - x
+                                                    val dy = item.offset.y + item.size.height / 2f - y
+                                                    dx * dx + dy * dy
+                                                }?.key as? String
+                                            }
+                                        },
+                                    )
+                                }
+                        } else Modifier
                         CourseGridCard(
+                            modifier = dragModifier,
                             pkg = pkg,
                             isPinned = pkg.id in state.pinned,
                             onClick = { openCourse(pkg, nav) },
@@ -395,6 +457,7 @@ fun LibraryTab(
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun CourseGridCard(
+    modifier: Modifier = Modifier,
     pkg: CoursePackageRecord,
     isPinned: Boolean,
     onClick: () -> Unit,
@@ -407,12 +470,9 @@ private fun CourseGridCard(
     var confirmDelete by remember { mutableStateOf(false) }
 
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = { sheetOpen = true },
-            ),
+            .clickable(onClick = onClick),
         shape = RoundedCornerShape(16.dp),
         color = Color.White,
         shadowElevation = 1.dp,
@@ -462,6 +522,20 @@ private fun CourseGridCard(
                         Icons.Default.PushPin,
                         contentDescription = if (isPinned) "取消置顶" else "置顶",
                         tint = if (isPinned) Color.White else Color.White.copy(alpha = 0.55f),
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                IconButton(
+                    onClick = { sheetOpen = true },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(2.dp)
+                        .size(36.dp),
+                ) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "更多操作",
+                        tint = Color.White.copy(alpha = 0.72f),
                         modifier = Modifier.size(20.dp),
                     )
                 }
