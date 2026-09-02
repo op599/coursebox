@@ -87,9 +87,13 @@ jobs:
         run: ./gradlew :app:packageMsi
       - name: Collect artifact
         run: |
-          mkdir out
-          copy packager\app\build\compose\binaries\main\msi\*.msi out\coursebox-packager-windows-x64.msi
-        shell: cmd
+          New-Item -ItemType Directory -Force out | Out-Null
+          $source = Get-ChildItem packager/app/build/compose/binaries/main/msi/*.msi | Select-Object -First 1
+          if (-not $source) { throw "MSI output not found" }
+          $target = "out/coursebox-packager-windows-x64.msi"
+          Copy-Item -LiteralPath $source.FullName -Destination $target
+          $size = (Get-Item $target).Length
+          if ($size -lt 1MB) { throw "MSI is unexpectedly small: $size bytes" }
       - uses: actions/upload-artifact@v4
         with:
           name: packager-windows
