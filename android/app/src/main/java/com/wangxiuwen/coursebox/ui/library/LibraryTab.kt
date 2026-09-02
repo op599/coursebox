@@ -5,6 +5,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -35,6 +36,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,6 +54,9 @@ import com.wangxiuwen.coursebox.core.UpdateChecker
 import com.wangxiuwen.coursebox.ui.theme.AccentBlue
 import com.wangxiuwen.coursebox.ui.theme.toneFor
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 private val PaperBg = Color(0xFFF5F4F1)
 private val InkSoft = Color(0xFF6B6B66)
@@ -82,7 +87,10 @@ fun LibraryTab(
     var draggedCourseId by remember { mutableStateOf<String?>(null) }
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
     var dropTargetId by remember { mutableStateOf<String?>(null) }
+    var autoScrollDirection by remember { mutableFloatStateOf(0f) }
+    var autoScrollJob by remember { mutableStateOf<Job?>(null) }
     val courseGridState = rememberLazyGridState()
+    val autoScrollEdge = with(LocalDensity.current) { 96.dp.toPx() }
 
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -330,6 +338,34 @@ fun LibraryTab(
                 ) {
                     items(sorted, key = { it.id }) { pkg ->
                         val dragging = draggedCourseId == pkg.id
+                        val updateDropTarget = {
+                            val visible = courseGridState.layoutInfo.visibleItemsInfo
+                            val origin = visible.firstOrNull { it.key == pkg.id }
+                            if (origin != null) {
+                                val x = origin.offset.x + origin.size.width / 2f + dragOffset.x
+                                val y = origin.offset.y + origin.size.height / 2f + dragOffset.y
+                                val draggingPinned = library.isPinned(pkg.id)
+                                val target = visible.firstOrNull { item ->
+                                    val id = item.key as? String
+                                    id != null &&
+                                        id != pkg.id &&
+                                        library.isPinned(id) == draggingPinned &&
+                                        x >= item.offset.x &&
+                                        x <= item.offset.x + item.size.width &&
+                                        y >= item.offset.y &&
+                                        y <= item.offset.y + item.size.height
+                                }
+                                val targetId = target?.key as? String
+                                if (target != null && targetId != null && targetId != dropTargetId) {
+                                    dropTargetId = targetId
+                                    library.previewMovePackage(pkg.id, targetId)
+                                    dragOffset += Offset(
+                                        (origin.offset.x - target.offset.x).toFloat(),
+                                        (origin.offset.y - target.offset.y).toFloat(),
+                                    )
+                                }
+                            }
+                        }
                         val dragModifier = if (query.isBlank()) {
                             Modifier
                                 .zIndex(if (dragging) 2f else 0f)
@@ -348,41 +384,65 @@ fun LibraryTab(
                                             draggedCourseId = pkg.id
                                             dragOffset = Offset.Zero
                                             dropTargetId = null
+                                            autoScrollDirection = 0f
+                                            autoScrollJob?.cancel()
+                                            autoScrollJob = scope.launch {
+                                                while (isActive) {
+                                                    val direction = autoScrollDirection
+                                                    if (direction != 0f) {
+                                                        val consumed = courseGridState.scrollBy(direction)
+                                                        if (consumed != 0f) {
+                                                            // Scrolling moves the item's layout origin in the
+                                                            // opposite direction. Counter it so the lifted card
+                                                            // stays under the user's finger while targets pass by.
+                                                            dragOffset += Offset(0f, consumed)
+                                                            updateDropTarget()
+                                                        }
+                                                    }
+                                                    delay(16)
+                                                }
+                                            }
                                         },
                                         onDragCancel = {
+                                            autoScrollDirection = 0f
+                                            autoScrollJob?.cancel()
+                                            autoScrollJob = null
                                             draggedCourseId = null
                                             dragOffset = Offset.Zero
                                             dropTargetId = null
+                                            scope.launch { library.persistPackageOrder() }
                                         },
                                         onDragEnd = {
-                                            val target = dropTargetId
+                                            autoScrollDirection = 0f
+                                            autoScrollJob?.cancel()
+                                            autoScrollJob = null
                                             draggedCourseId = null
                                             dragOffset = Offset.Zero
                                             dropTargetId = null
-                                            if (target != null && target != pkg.id) {
-                                                scope.launch { library.movePackage(pkg.id, target) }
-                                            }
+                                            scope.launch { library.persistPackageOrder() }
                                         },
                                         onDrag = { change, amount ->
                                             change.consume()
                                             dragOffset += amount
-                                            val visible = courseGridState.layoutInfo.visibleItemsInfo
-                                            val origin = visible.firstOrNull { it.key == pkg.id }
-                                            if (origin != null) {
-                                                val x = origin.offset.x + origin.size.width / 2f + dragOffset.x
-                                                val y = origin.offset.y + origin.size.height / 2f + dragOffset.y
-                                                dropTargetId = visible.minByOrNull { item ->
-                                                    val dx = item.offset.x + item.size.width / 2f - x
-                                                    val dy = item.offset.y + item.size.height / 2f - y
-                                                    dx * dx + dy * dy
-                                                }?.key as? String
+                                            val info = courseGridState.layoutInfo
+                                            val origin = info.visibleItemsInfo.firstOrNull { it.key == pkg.id }
+                                            val y = origin?.let {
+                                                it.offset.y + it.size.height / 2f + dragOffset.y
                                             }
+                                            autoScrollDirection = when {
+                                                y == null -> 0f
+                                                y < info.viewportStartOffset + autoScrollEdge -> -28f
+                                                y > info.viewportEndOffset - autoScrollEdge -> 28f
+                                                else -> 0f
+                                            }
+                                            updateDropTarget()
                                         },
                                     )
                                 }
                         } else Modifier
                         CourseGridCard(
-                            modifier = dragModifier,
+                            modifier = (if (dragging) Modifier else Modifier.animateItem())
+                                .then(dragModifier),
                             pkg = pkg,
                             isPinned = pkg.id in state.pinned,
                             onClick = { openCourse(pkg, nav) },

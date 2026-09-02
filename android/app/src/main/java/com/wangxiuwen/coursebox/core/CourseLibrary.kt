@@ -147,9 +147,10 @@ class CourseLibrary private constructor(
 
     fun isPinned(courseId: String): Boolean = courseId in state.pinned
 
-    /** Persist a user-defined card order. Pinned courses remain grouped at
-     *  the front, but can also be reordered relative to other pinned cards. */
-    suspend fun movePackage(movingId: String, targetId: String) {
+    /** Update card order immediately while a drag is in progress. Disk IO is
+     *  intentionally deferred until drop so neighbouring cards can animate
+     *  out of the way without writing the index on every pointer event. */
+    fun previewMovePackage(movingId: String, targetId: String) {
         if (movingId == targetId) return
         val current = state.packages.toMutableList()
         val from = current.indexOfFirst { it.id == movingId }
@@ -165,6 +166,10 @@ class CourseLibrary private constructor(
             pinned.add(pinnedTarget.coerceAtMost(pinned.size), movingId)
         }
         stateFlow.value = state.copy(packages = current, pinned = pinned)
+    }
+
+    /** Commit the latest preview order after the user releases the card. */
+    suspend fun persistPackageOrder() {
         persist()
     }
 
