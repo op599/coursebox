@@ -52,6 +52,7 @@ private object Routes {
     const val TTS = "tts"
     const val LAN_IMPORT = "lan_import"
     const val APP_SHARE = "app_share"
+    const val SHARE_BATCH = "share"
     const val SHARE = "share/{courseId}"
 }
 
@@ -145,6 +146,9 @@ fun RootScreen(library: CourseLibrary) {
             }
             composable(Routes.APP_SHARE) {
                 com.wangxiuwen.coursebox.ui.share.AppShareScreen(nav)
+            }
+            composable(Routes.SHARE_BATCH) {
+                com.wangxiuwen.coursebox.ui.share.ShareScreen(library, null, nav)
             }
             composable(Routes.SHARE) { entry ->
                 val cid = entry.arguments?.getString("courseId").orEmpty()

@@ -159,6 +159,21 @@ fun LibraryTab(
                                 nav.navigate("app_share")
                             },
                         )
+                        DropdownMenuItem(
+                            text = { Text("批量分享课程") },
+                            leadingIcon = {
+                                Icon(Icons.Default.Share, null, tint = Color.Black)
+                            },
+                            enabled = state.packages.isNotEmpty(),
+                            colors = MenuDefaults.itemColors(
+                                textColor = Color.Black,
+                                leadingIconColor = Color.Black,
+                            ),
+                            onClick = {
+                                overflowOpen = false
+                                nav.navigate("share")
+                            },
+                        )
                         // 文本朗读 (TTS) is an *in-lesson* assist for
                         // plain-text courses, not a top-level menu item —
                         // hidden here until it's wired into the reader view.

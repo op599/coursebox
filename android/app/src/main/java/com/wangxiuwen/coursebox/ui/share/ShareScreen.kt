@@ -1,5 +1,7 @@
 package com.wangxiuwen.coursebox.ui.share
 
+import android.content.ClipData
+import android.content.Intent
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,8 +20,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.navigation.NavHostController
 import com.wangxiuwen.coursebox.core.CourseLibrary
+import com.wangxiuwen.coursebox.core.CoursePackageRecord
+import com.wangxiuwen.coursebox.core.courseShareFiles
 import com.wangxiuwen.coursebox.core.lan.CourseShareClient
 import com.wangxiuwen.coursebox.core.lan.DeviceType
 import com.wangxiuwen.coursebox.core.lan.InfoDto
@@ -27,7 +32,6 @@ import com.wangxiuwen.coursebox.core.lan.LocalSend
 import com.wangxiuwen.coursebox.core.lan.LocalSendDiscovery
 import com.wangxiuwen.coursebox.ui.theme.AccentBlue
 import kotlinx.coroutines.launch
-import java.io.File
 
 private val PaperBg = Color(0xFFF5F4F1)
 private val InkSoft = Color(0xFF6B6B66)
@@ -41,7 +45,7 @@ private data class Peer(
 )
 
 /**
- * Sends a course package to another coursebox / LocalSend receiver
+ * Sends one or more course packages to another coursebox / LocalSend receiver
  * discovered automatically via UDP multicast + mDNS — no manual IP entry.
  *
  * Lifecycle: a [LocalSendDiscovery] is started on Composable enter and
@@ -50,10 +54,19 @@ private data class Peer(
  * prepare-upload + per-file streaming via [CourseShareClient].
  */
 @Composable
-fun ShareScreen(library: CourseLibrary, courseId: String, nav: NavHostController) {
+fun ShareScreen(library: CourseLibrary, initialCourseId: String?, nav: NavHostController) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val pkg = remember(courseId) { library.packageById(courseId) }
+    val packages = library.stateFlow.value.packages
+    val selected = remember(initialCourseId) {
+        mutableStateMapOf<String, Boolean>().apply {
+            if (initialCourseId == null) {
+                packages.forEach { put(it.id, true) }
+            } else {
+                put(initialCourseId, true)
+            }
+        }
+    }
 
     val peers = remember { mutableStateMapOf<String, Peer>() }
     var sending by remember { mutableStateOf(false) }
@@ -61,7 +74,9 @@ fun ShareScreen(library: CourseLibrary, courseId: String, nav: NavHostController
     var lastResult by remember { mutableStateOf<String?>(null) }
     val progressByFile = remember { mutableStateMapOf<String, Pair<Long, Long>>() }
 
-    val cxFiles = pkg?.cxPaths?.map { File(it) }?.filter { it.exists() }.orEmpty()
+    val selectedIds = selected.filterValues { it }.keys
+    val selectedPackages = packages.filter { it.id in selectedIds }
+    val cxFiles = courseShareFiles(packages, selectedIds)
     val totalBytes = cxFiles.sumOf { it.length() }
 
     // selfInfo must be stable per-session so the discovery loop's "skip own
@@ -106,27 +121,98 @@ fun ShareScreen(library: CourseLibrary, courseId: String, nav: NavHostController
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = Color.Black)
                 }
                 Spacer(Modifier.width(4.dp))
-                Text("分享课程", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold, color = Color.Black)
+                Text("批量分享课程", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold, color = Color.Black)
             }
 
             Column(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Card(title = pkg?.title ?: "未知课程") {
+                Card(title = "选择课程 (${selectedPackages.size}/${packages.size})") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        TextButton(
+                            enabled = !sending,
+                            onClick = {
+                                val selectAll = selectedPackages.size != packages.size
+                                packages.forEach { selected[it.id] = selectAll }
+                            },
+                        ) {
+                            Text(
+                                if (selectedPackages.size == packages.size) "清空" else "全选",
+                                color = AccentBlue,
+                            )
+                        }
+                    }
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        items(packages, key = { it.id }) { course ->
+                            CourseSelectionRow(
+                                course = course,
+                                checked = selected[course.id] == true,
+                                enabled = !sending,
+                                onToggle = { selected[course.id] = !(selected[course.id] ?: false) },
+                            )
+                        }
+                    }
                     Text(
-                        "${cxFiles.size} 个文件 · ${fmtMb(totalBytes)} MB",
+                        "共 ${cxFiles.size} 个去重文件 · ${fmtMb(totalBytes)} MB",
                         color = InkSoft,
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    if (pkg?.multipartParts?.isNotEmpty() == true) {
+                    val multipartCount = selectedPackages.count { it.multipartParts.isNotEmpty() }
+                    if (multipartCount > 0) {
                         Text(
-                            "多分片 (${pkg.multipartParts.size} parts) — 对方按 part 累加",
+                            "包含 $multipartCount 个多分片课程，所有分片会自动发送",
                             color = InkSoft,
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
                 }
+
+                OutlinedButton(
+                    enabled = !sending && cxFiles.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        runCatching {
+                            val uris = ArrayList(cxFiles.map { file ->
+                                FileProvider.getUriForFile(
+                                    ctx,
+                                    "${ctx.packageName}.fileprovider",
+                                    file,
+                                )
+                            })
+                            val send = Intent(
+                                if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE,
+                            ).apply {
+                                type = "application/octet-stream"
+                                if (uris.size == 1) {
+                                    putExtra(Intent.EXTRA_STREAM, uris.first())
+                                } else {
+                                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                                }
+                                clipData = ClipData.newUri(ctx.contentResolver, "课程包", uris.first()).apply {
+                                    uris.drop(1).forEach { addItem(ClipData.Item(it)) }
+                                }
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            ctx.startActivity(Intent.createChooser(send, "用互传或蓝牙分享课程包"))
+                        }.onFailure { e ->
+                            lastResult = "✗ 无法打开系统分享：${e.message}"
+                        }
+                    },
+                ) {
+                    Text("用系统互传 / 蓝牙分享 ${cxFiles.size} 个文件")
+                }
+                Text(
+                    "大文件建议选小米互传或 Quick Share；普通蓝牙速度较慢。对方收到 .cx 后需在课程盒子中导入。",
+                    color = InkSoft,
+                    style = MaterialTheme.typography.bodySmall,
+                )
 
                 Card(title = "附近设备 (${peers.size})") {
                     if (peers.isEmpty()) {
@@ -137,7 +223,7 @@ fun ShareScreen(library: CourseLibrary, courseId: String, nav: NavHostController
                         )
                     } else {
                         LazyColumn(
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             items(peers.values.toList()) { p ->
@@ -162,7 +248,8 @@ fun ShareScreen(library: CourseLibrary, courseId: String, nav: NavHostController
                                                 progressByFile[id] = sent to total
                                             }
                                             lastResult = when (r) {
-                                                is CourseShareClient.Result.Ok -> "✓ 已发送到 ${p.info.alias}"
+                                                is CourseShareClient.Result.Ok ->
+                                                    "✓ 已向 ${p.info.alias} 发送 ${selectedPackages.size} 个课程（${r.sentFiles} 个文件）"
                                                 is CourseShareClient.Result.Rejected -> "✗ ${p.info.alias} 拒绝: ${r.message}"
                                                 is CourseShareClient.Result.IoError -> "✗ 网络错: ${r.cause.message}"
                                             }
@@ -204,6 +291,40 @@ fun ShareScreen(library: CourseLibrary, courseId: String, nav: NavHostController
 
                 Spacer(Modifier.height(40.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun CourseSelectionRow(
+    course: CoursePackageRecord,
+    checked: Boolean,
+    enabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onToggle).padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = { onToggle() },
+            colors = CheckboxDefaults.colors(checkedColor = AccentBlue),
+        )
+        Spacer(Modifier.width(6.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                course.title,
+                color = Color.Black,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "${course.lessonIndex.size} 课 · ${course.cxPaths.size} 文件",
+                color = InkSoft,
+                style = MaterialTheme.typography.labelSmall,
+            )
         }
     }
 }
