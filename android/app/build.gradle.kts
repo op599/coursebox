@@ -15,7 +15,7 @@ android {
         targetSdk = 34
         // Stable semver name — must match GitHub release tags (vX.Y.Z) so the
         // in-app update checker can compare. Bump on every release.
-        versionName = "0.10.22"
+        versionName = "0.10.23"
         // Monotonic versionCode from epoch-2024 so reinstall always advances
         // even between semver bumps.
         versionCode = ((System.currentTimeMillis() - 1704067200_000L) / 1000)

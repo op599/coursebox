@@ -65,6 +65,18 @@ fun NceListScreen(
                     it.titleEn.lowercase().contains(needle) ||
                     it.titleCn.contains(needle) ||
                     it.question.lowercase().contains(needle) ||
+                    it.lines.any { line ->
+                        line.en.lowercase().contains(needle) || line.cn.contains(needle)
+                    } ||
+                    it.sections.any { section ->
+                        section.title.lowercase().contains(needle) ||
+                            section.text.any { text -> text.lowercase().contains(needle) } ||
+                            section.words.any { word ->
+                                word.word.lowercase().contains(needle) ||
+                                    word.definition.contains(needle) ||
+                                    word.pos.lowercase().contains(needle)
+                            }
+                    } ||
                     it.numberLabel.contains(needle)
             }
             .toList()
