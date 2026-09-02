@@ -36,6 +36,7 @@ import com.wangxiuwen.coursebox.core.UpdateAvailable
 import com.wangxiuwen.coursebox.core.UpdateChecker
 import com.wangxiuwen.coursebox.ui.chinese.ChineseLibraryScreen
 import com.wangxiuwen.coursebox.ui.library.LibraryTab
+import com.wangxiuwen.coursebox.ui.library.NearbyReceiveHost
 import com.wangxiuwen.coursebox.ui.music.MusicFoundationScreen
 import com.wangxiuwen.coursebox.ui.nce.NceListScreen
 import com.wangxiuwen.coursebox.ui.nce.NcePlayerScreen
@@ -81,6 +82,16 @@ fun RootScreen(library: CourseLibrary) {
 
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val nearbyReceiver = remember { NearbyReceiveHost(ctx, library) }
+
+    // Do not cut off a multi-GB transfer merely because the display timed
+    // out. The receiver is approval-gated and lives with this activity.
+    DisposableEffect(nearbyReceiver) {
+        nearbyReceiver.start()
+        onDispose {
+            nearbyReceiver.stop()
+        }
+    }
 
     // Lifecycle of the update prompt: check → ask → download → install.
     var update by remember { mutableStateOf<UpdateAvailable?>(null) }
@@ -142,7 +153,7 @@ fun RootScreen(library: CourseLibrary) {
             }
             composable(Routes.TTS) { TtsScreen(nav) }
             composable(Routes.LAN_IMPORT) {
-                com.wangxiuwen.coursebox.ui.library.LanImportScreen(library, nav)
+                com.wangxiuwen.coursebox.ui.library.LanImportScreen(nearbyReceiver, nav)
             }
             composable(Routes.APP_SHARE) {
                 com.wangxiuwen.coursebox.ui.share.AppShareScreen(nav)
@@ -215,6 +226,32 @@ fun RootScreen(library: CourseLibrary) {
                 dismissButton = {
                     TextButton(onClick = { promptDismissed = true }) {
                         Text("稍后", color = Color(0xFF6B7280))
+                    }
+                },
+            )
+        }
+
+        nearbyReceiver.pending.value?.let { request ->
+            val sizeMb = request.totalBytes.toDouble() / 1024.0 / 1024.0
+            AlertDialog(
+                onDismissRequest = { nearbyReceiver.respond(request.id, false) },
+                containerColor = Color.White,
+                title = { Text("接收附近课程？") },
+                text = {
+                    Text(
+                        "${request.sender} 想发送 ${request.courseCount} 个课程" +
+                            "（${request.files.size} 个文件，共 ${"%.1f".format(sizeMb)} MB）。\n\n" +
+                            "确认后将通过当前局域网直接传输并自动导入。",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { nearbyReceiver.respond(request.id, true) }) {
+                        Text("接收", color = AccentBlue)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { nearbyReceiver.respond(request.id, false) }) {
+                        Text("拒绝", color = Color(0xFF6B7280))
                     }
                 },
             )

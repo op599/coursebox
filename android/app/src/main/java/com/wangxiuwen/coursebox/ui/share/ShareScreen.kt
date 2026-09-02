@@ -28,8 +28,8 @@ import com.wangxiuwen.coursebox.core.courseShareFiles
 import com.wangxiuwen.coursebox.core.lan.CourseShareClient
 import com.wangxiuwen.coursebox.core.lan.DeviceType
 import com.wangxiuwen.coursebox.core.lan.InfoDto
-import com.wangxiuwen.coursebox.core.lan.LocalSend
 import com.wangxiuwen.coursebox.core.lan.LocalSendDiscovery
+import com.wangxiuwen.coursebox.core.lan.courseboxFingerprint
 import com.wangxiuwen.coursebox.ui.theme.AccentBlue
 import kotlinx.coroutines.launch
 
@@ -82,13 +82,15 @@ fun ShareScreen(library: CourseLibrary, initialCourseId: String?, nav: NavHostCo
     // selfInfo must be stable per-session so the discovery loop's "skip own
     // fingerprint" check works.
     val selfInfo = remember {
-        val fp = "share-" + (ctx.packageName + Build.MODEL).hashCode().toUInt().toString(16)
+        // Must match NearbyReceiveHost. It is device-specific as two phones
+        // of the same model still need to discover one another.
+        val fp = courseboxFingerprint(ctx)
         InfoDto(
             alias = "课程盒子 · ${Build.MODEL ?: "Android"}",
             deviceModel = Build.MODEL,
             deviceType = DeviceType.Mobile,
             fingerprint = fp,
-            port = LocalSend.PORT,
+            port = CourseShareClient.LAN_PORT,
             protocol = "http",
             download = false,
         )
@@ -206,10 +208,10 @@ fun ShareScreen(library: CourseLibrary, initialCourseId: String?, nav: NavHostCo
                         }
                     },
                 ) {
-                    Text("用系统互传 / 蓝牙分享 ${cxFiles.size} 个文件")
+                    Text("用系统分享（兼容模式）${cxFiles.size} 个文件")
                 }
                 Text(
-                    "大文件建议选小米互传或 Quick Share；普通蓝牙速度较慢。对方收到 .cx 后需在课程盒子中导入。",
+                    "优先点击下面的课程盒子设备直接传输；兼容模式取决于手机系统，可能不支持多文件。",
                     color = InkSoft,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -244,6 +246,7 @@ fun ShareScreen(library: CourseLibrary, initialCourseId: String?, nav: NavHostCo
                                                 host = p.host,
                                                 port = p.port,
                                                 files = specs,
+                                                courseCount = selectedPackages.size,
                                             ) { id, sent, total ->
                                                 progressByFile[id] = sent to total
                                             }

@@ -17,17 +17,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
-import com.wangxiuwen.coursebox.core.CourseLibrary
-import com.wangxiuwen.coursebox.core.LanImportServer
-import com.wangxiuwen.coursebox.core.lan.DeviceType
-import com.wangxiuwen.coursebox.core.lan.InfoDto
-import com.wangxiuwen.coursebox.core.lan.LocalSend
-import com.wangxiuwen.coursebox.core.lan.LocalSendDiscovery
 import com.wangxiuwen.coursebox.ui.theme.AccentBlue
 
 private val PaperBg = Color(0xFFF5F4F1)
@@ -35,8 +28,6 @@ private val InkSoft = Color(0xFF6B6B66)
 
 /** Per-file row tracked by the LAN screen so the user sees every upload's
  *  outcome instead of just the last one. */
-private data class LanFileRow(val name: String, val state: String, val message: String)
-
 /**
  * Full-screen replacement for the old AlertDialog-based LAN importer.
  * Two-pane in landscape (QR + meta on the left, results list on the right);
@@ -45,80 +36,19 @@ private data class LanFileRow(val name: String, val state: String, val message: 
  * window so any number of upload rows fits.
  */
 @Composable
-fun LanImportScreen(library: CourseLibrary, nav: NavHostController) {
-    val ctx = LocalContext.current
+fun LanImportScreen(receiver: NearbyReceiveHost, nav: NavHostController) {
     val cfg = LocalConfiguration.current
     val isLandscape = cfg.screenWidthDp > cfg.screenHeightDp
 
-    var serverStatus by remember { mutableStateOf("启动服务器…") }
-    var url by remember { mutableStateOf<String?>(null) }
-    var qr by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    val rows = remember { mutableStateListOf<LanFileRow>() }
-
-    val server = remember {
-        LanImportServer(
-            ctx,
-            library,
-            onProgress = { msg -> serverStatus = msg },
-            onEvent = { ev ->
-                when (ev) {
-                    is LanImportServer.Event.Started -> {
-                        rows.removeAll { it.name == ev.filename }
-                        rows.add(0, LanFileRow(ev.filename, "pending", "上传中…"))
-                    }
-                    is LanImportServer.Event.Done -> {
-                        val i = rows.indexOfFirst { it.name == ev.filename }
-                        if (i >= 0) rows[i] = LanFileRow(ev.filename, "done", ev.message)
-                    }
-                    is LanImportServer.Event.Failed -> {
-                        val i = rows.indexOfFirst { it.name == ev.filename }
-                        if (i >= 0) rows[i] = LanFileRow(ev.filename, "error", ev.message)
-                    }
-                }
-            },
-        )
-    }
-
-    // Discovery: announce this receiver on UDP multicast 224.0.0.167:53317
-    // and via NSD mDNS so a sender's ShareScreen sees the device in its
-    // peer list without anyone typing an IP.
-    val selfInfo = remember {
-        val fp = "recv-" + (ctx.packageName + android.os.Build.MODEL).hashCode().toUInt().toString(16)
-        InfoDto(
-            alias = "课程盒子 · ${android.os.Build.MODEL ?: "Android"}",
-            deviceModel = android.os.Build.MODEL,
-            deviceType = DeviceType.Mobile,
-            fingerprint = fp,
-            // Advertise the LanImportServer port (38723) — that's where the
-            // sender's PUT /raw lands. Discovery itself runs on 53317 as
-            // per the LocalSend spec, but the file-transfer port we point
-            // peers at is the LAN server.
-            port = com.wangxiuwen.coursebox.core.lan.CourseShareClient.LAN_PORT,
-            protocol = "http",
-            download = false,
-        )
-    }
+    val serverStatus by receiver.status
+    val url by receiver.url
+    val qr by receiver.qr
+    val rows = receiver.rows
 
     DisposableEffect(Unit) {
-        runCatching {
-            server.start(fi.iki.elonen.NanoHTTPD.SOCKET_READ_TIMEOUT, false)
-            val u = LanImportServer.url()
-            if (u != null) {
-                url = u
-                qr = LanImportServer.qrBitmap(u, 720)
-                serverStatus = "等待上传…"
-            } else {
-                serverStatus = "未检测到 Wi-Fi, 请检查网络"
-            }
-        }.onFailure { serverStatus = "启动失败: ${it.message}" }
-
-        // Start announce-only discovery alongside the server.
-        val disc = LocalSendDiscovery(ctx, { selfInfo }) { _, _, _ -> /* receiver doesn't act on incoming announces */ }
-        runCatching { disc.start() }
-
+        receiver.setManualImportOpen(true)
         onDispose {
-            runCatching { server.stop() }
-            runCatching { disc.stop() }
+            receiver.setManualImportOpen(false)
         }
     }
 
@@ -202,7 +132,7 @@ private fun QrSection(qr: android.graphics.Bitmap?, url: String?, serverStatus: 
 }
 
 @Composable
-private fun ResultsList(rows: List<LanFileRow>, modifier: Modifier = Modifier) {
+private fun ResultsList(rows: List<NearbyReceiveHost.FileRow>, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = Color.White,

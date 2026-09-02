@@ -16,6 +16,11 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import android.graphics.Bitmap
 import android.graphics.Color
+import org.json.JSONObject
+import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "LanImportServer"
 private const val SERVER_PORT = 38723
@@ -36,7 +41,20 @@ class LanImportServer(
     private val library: CourseLibrary,
     private val onProgress: (status: String) -> Unit,
     private val onEvent: (Event) -> Unit = {},
+    private val allowLegacyRaw: () -> Boolean = { true },
+    private val onShareRequest: ((IncomingShareRequest, (Boolean) -> Unit) -> Unit)? = null,
+    private val enableLocalSendReceiver: Boolean = false,
 ) : NanoHTTPD(SERVER_PORT) {
+
+    data class IncomingFile(val name: String, val size: Long)
+    data class IncomingShareRequest(
+        val id: String,
+        val sender: String,
+        val courseCount: Int,
+        val files: List<IncomingFile>,
+    ) {
+        val totalBytes: Long get() = files.sumOf { it.size }
+    }
 
     /**
      * Structured progress event surfaced for UI consumers. The old
@@ -63,13 +81,19 @@ class LanImportServer(
         val message: String,  // human-readable progress / result / error
     )
     private val imports = java.util.concurrent.ConcurrentHashMap<String, ImportState>()
+    private data class ApprovedSession(
+        val files: ConcurrentHashMap<String, Long>,
+        val expiresAt: Long,
+    )
+    private val approvedSessions = ConcurrentHashMap<String, ApprovedSession>()
+    private val pendingApprovals = ConcurrentHashMap<String, CompletableFuture<Boolean>>()
 
     /**
      * LocalSend v2 receiver, runs on port 53317 in parallel. We lifecycle it
      * alongside this server so a desktop running LocalSend can push a zip
      * directly without the browser upload page.
      */
-    private val localSend = LocalSendServer(ctx, library, onProgress)
+    private val localSend by lazy { LocalSendServer(ctx, library, onProgress) }
 
     override fun start(timeout: Int, daemon: Boolean) {
         // NanoHTTPD's default socket read timeout is 5000 ms — that aborts
@@ -78,17 +102,70 @@ class LanImportServer(
         // 0 disables the timeout entirely; we want big uploads to actually
         // finish, and the connection is intra-LAN so an open socket is fine.
         super.start(0, daemon)
-        runCatching { localSend.start(0, daemon) }
-            .onFailure { Log.w(TAG, "localsend start fail", it) }
+        if (enableLocalSendReceiver) {
+            runCatching { localSend.start(0, daemon) }
+                .onFailure { Log.w(TAG, "localsend start fail", it) }
+        }
     }
 
     override fun serve(session: IHTTPSession): Response = when {
+        session.method == Method.POST && session.uri == "/api/coursebox/prepare" -> handlePrepare(session)
         session.method == Method.GET && session.uri == "/" -> page()
         session.method == Method.POST && session.uri == "/upload" -> handleMultipart(session)
         session.method == Method.PUT && session.uri.startsWith("/raw") -> handleRaw(session)
         session.method == Method.GET && session.uri == "/status" -> handleStatus(session)
         session.method == Method.GET && session.uri == "/apk" -> serveApk()
         else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not Found")
+    }
+
+    private fun handlePrepare(session: IHTTPSession): Response {
+        val callback = onShareRequest ?: return newFixedLengthResponse(
+            Response.Status.NOT_FOUND, "text/plain", "unsupported",
+        )
+        return try {
+            val body = HashMap<String, String>()
+            session.parseBody(body)
+            val obj = JSONObject(body["postData"].orEmpty())
+            val arr = obj.optJSONArray("files")
+                ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "missing files")
+            val incoming = buildList {
+                for (i in 0 until arr.length()) {
+                    val f = arr.getJSONObject(i)
+                    val name = f.optString("name").trim()
+                    val size = f.optLong("size", -1)
+                    if (name.isNotEmpty() && size >= 0) add(IncomingFile(name, size))
+                }
+            }
+            if (incoming.isEmpty()) return newFixedLengthResponse(
+                Response.Status.BAD_REQUEST, "text/plain", "empty files",
+            )
+            val request = IncomingShareRequest(
+                id = UUID.randomUUID().toString(),
+                sender = obj.optString("sender", "附近设备").take(80),
+                courseCount = obj.optInt("courseCount", incoming.size).coerceAtLeast(1),
+                files = incoming,
+            )
+            val decision = CompletableFuture<Boolean>()
+            pendingApprovals[request.id] = decision
+            callback(request) { accepted -> decision.complete(accepted) }
+            val accepted = runCatching { decision.get(90, TimeUnit.SECONDS) }.getOrDefault(false)
+            pendingApprovals.remove(request.id)
+            if (!accepted) return newFixedLengthResponse(
+                Response.Status.FORBIDDEN, "application/json", """{"accepted":false}""",
+            )
+            val token = UUID.randomUUID().toString()
+            approvedSessions[token] = ApprovedSession(
+                ConcurrentHashMap(incoming.associate { it.name to it.size }),
+                System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(30),
+            )
+            newFixedLengthResponse(
+                Response.Status.OK, "application/json",
+                """{"accepted":true,"sessionId":"$token"}""",
+            )
+        } catch (e: Throwable) {
+            Log.w(TAG, "prepare fail", e)
+            newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", e.message ?: "bad request")
+        }
     }
 
     private fun handleStatus(session: IHTTPSession): Response {
@@ -387,6 +464,19 @@ class LanImportServer(
                     Response.Status.LENGTH_REQUIRED, "text/plain",
                     "missing Content-Length",
                 )
+            val shareToken = session.parameters["sessionId"]?.firstOrNull()
+            val approved = shareToken?.let { token ->
+                val entry = approvedSessions[token]
+                if (entry == null || entry.expiresAt < System.currentTimeMillis()) {
+                    approvedSessions.remove(token)
+                    false
+                } else entry.files[name] == total
+            } == true
+            if (!approved && !allowLegacyRaw()) {
+                return newFixedLengthResponse(
+                    Response.Status.FORBIDDEN, "text/plain", "请先在接收端确认",
+                )
+            }
             // UUID instead of currentTimeMillis: two browser PUTs landing in
             // the same millisecond would collide on the timestamp filename,
             // and the second import would race on a half-written zip.
@@ -410,6 +500,11 @@ class LanImportServer(
                 Log.w(TAG, "raw short read: $remaining bytes missing of $total")
             }
             val id = beginImport(out, name)
+            if (approved) {
+                val token = requireNotNull(shareToken)
+                approvedSessions[token]?.files?.remove(name)
+                if (approvedSessions[token]?.files?.isEmpty() == true) approvedSessions.remove(token)
+            }
             newFixedLengthResponse(Response.Status.OK, "application/json", """{"id":"$id"}""")
         } catch (e: Throwable) {
             Log.w(TAG, "raw fail", e)
@@ -449,8 +544,11 @@ class LanImportServer(
     }
 
     override fun stop() {
+        pendingApprovals.values.forEach { it.complete(false) }
+        pendingApprovals.clear()
+        approvedSessions.clear()
         super.stop()
-        runCatching { localSend.stop() }
+        if (enableLocalSendReceiver) runCatching { localSend.stop() }
         runCatching { scope.coroutineContext.cancel() }
     }
 
