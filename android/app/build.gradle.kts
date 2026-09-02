@@ -15,7 +15,7 @@ android {
         targetSdk = 34
         // Stable semver name — must match GitHub release tags (vX.Y.Z) so the
         // in-app update checker can compare. Bump on every release.
-        versionName = "0.10.19"
+        versionName = "0.10.20"
         // Monotonic versionCode from epoch-2024 so reinstall always advances
         // even between semver bumps.
         versionCode = ((System.currentTimeMillis() - 1704067200_000L) / 1000)
@@ -63,6 +63,7 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)
+    testImplementation("junit:junit:4.13.2")
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.3")
