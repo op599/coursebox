@@ -21,6 +21,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class RepeatModeChoice { OFF, ALL, ONE }
+enum class SentencePracticeMode { OFF, REPEAT_ONE, SHADOWING }
+enum class ShadowingPhase { IDLE, LISTENING, SPEAKING }
 
 /**
  * Player view-model for the NCE reader. Wraps a single [ExoPlayer]
@@ -56,6 +58,12 @@ class NcePlayerVm(context: Context) : ViewModel() {
         private set
     var sentenceAnalysisState: SentenceAnalysisState by mutableStateOf(SentenceAnalysisState.IDLE)
         private set
+    var activeSentenceIndex by mutableStateOf(-1)
+        private set
+    var sentencePracticeMode by mutableStateOf(SentencePracticeMode.OFF)
+        private set
+    var shadowingPhase by mutableStateOf(ShadowingPhase.IDLE)
+        private set
 
     /** Which course package the current playlist belongs to; lets the
      * mini player navigate back to the right player screen. */
@@ -78,6 +86,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
 
     fun stopAndClear() {
         analysisJob?.cancel()
+        cancelSentencePractice()
         player.stop()
         player.clearMediaItems()
         playlist = emptyList()
@@ -91,6 +100,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var tickJob: Job? = null
     private var analysisJob: Job? = null
+    private var shadowingJob: Job? = null
     private val voiceActivityAnalyzer = VoiceActivityAnalyzer(appCtx)
 
     private val player: ExoPlayer = ExoPlayer.Builder(appCtx)
@@ -113,6 +123,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
                 }
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                cancelSentencePractice()
                 currentIndex = p.currentMediaItemIndex.coerceAtLeast(0)
                 durationMs = p.duration.coerceAtLeast(0L)
                 positionMs = 0L
@@ -191,20 +202,41 @@ class NcePlayerVm(context: Context) : ViewModel() {
     }
 
     fun togglePlayPause() {
-        if (player.isPlaying) player.pause() else player.play()
+        if (shadowingPhase == ShadowingPhase.SPEAKING) {
+            shadowingJob?.cancel()
+            shadowingPhase = ShadowingPhase.LISTENING
+            speechSegments.getOrNull(activeSentenceIndex)?.let { seekInternal(it.startMs) }
+            player.play()
+        } else if (player.isPlaying) {
+            player.pause()
+        } else {
+            player.play()
+        }
     }
 
     fun seekTo(ms: Long) {
+        cancelSentencePractice()
+        seekInternal(ms)
+    }
+
+    private fun seekInternal(ms: Long) {
         val target = ms.coerceAtLeast(0L)
         player.seekTo(target)
         positionMs = target
     }
-    fun playNext() { if (player.hasNextMediaItem()) player.seekToNextMediaItem() }
-    fun playPrev() { if (player.hasPreviousMediaItem()) player.seekToPreviousMediaItem() }
+    fun playNext() {
+        cancelSentencePractice()
+        if (player.hasNextMediaItem()) player.seekToNextMediaItem()
+    }
+    fun playPrev() {
+        cancelSentencePractice()
+        if (player.hasPreviousMediaItem()) player.seekToPreviousMediaItem()
+    }
 
     /** Restart the current spoken chunk; a second press near its start moves
      * to the previous chunk. While VAD is still running, fall back to 8 s. */
     fun playPreviousSentence() {
+        cancelSentencePractice()
         val segments = speechSegments
         if (segments.isEmpty()) {
             seekTo(player.currentPosition - FALLBACK_SEEK_MS)
@@ -222,6 +254,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
     }
 
     fun replayCurrentSentence() {
+        cancelSentencePractice()
         if (speechSegments.isEmpty()) {
             seekTo(player.currentPosition - FALLBACK_SEEK_MS)
         } else {
@@ -230,6 +263,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
     }
 
     fun playNextSentence() {
+        cancelSentencePractice()
         val next = speechSegments.firstOrNull { it.startMs > player.currentPosition + 250L }
         when {
             next != null -> seekTo(next.startMs)
@@ -239,6 +273,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
     }
     fun selectIndex(idx: Int) {
         if (idx in playlist.indices) {
+            cancelSentencePractice()
             player.seekTo(idx, 0L)
             player.playWhenReady = true
         }
@@ -262,6 +297,56 @@ class NcePlayerVm(context: Context) : ViewModel() {
     fun toggleFlip() { showBack = !showBack }
     fun setFlip(v: Boolean) { showBack = v }
 
+    /** Play any VAD sentence selected from the sentence list. */
+    fun playSentence(index: Int) {
+        val segment = speechSegments.getOrNull(index) ?: return
+        cancelSentencePractice()
+        activeSentenceIndex = index
+        seekInternal(segment.startMs)
+        player.play()
+    }
+
+    /** Toggle an exact sentence loop. This deliberately overrides shadowing. */
+    fun toggleRepeatSentence(index: Int) {
+        val segment = speechSegments.getOrNull(index) ?: return
+        if (sentencePracticeMode == SentencePracticeMode.REPEAT_ONE && activeSentenceIndex == index) {
+            cancelSentencePractice()
+            return
+        }
+        shadowingJob?.cancel()
+        sentencePracticeMode = SentencePracticeMode.REPEAT_ONE
+        shadowingPhase = ShadowingPhase.IDLE
+        activeSentenceIndex = index
+        seekInternal(segment.startMs)
+        player.play()
+    }
+
+    /** Listen to one sentence, pause for the learner to repeat it, then advance. */
+    fun toggleShadowing() {
+        if (sentencePracticeMode == SentencePracticeMode.SHADOWING) {
+            cancelSentencePractice()
+            return
+        }
+        val index = when {
+            activeSentenceIndex in speechSegments.indices -> activeSentenceIndex
+            speechSegments.isNotEmpty() -> segmentAtOrBefore(player.currentPosition)
+            else -> return
+        }
+        shadowingJob?.cancel()
+        sentencePracticeMode = SentencePracticeMode.SHADOWING
+        shadowingPhase = ShadowingPhase.LISTENING
+        activeSentenceIndex = index
+        seekInternal(speechSegments[index].startMs)
+        player.play()
+    }
+
+    fun cancelSentencePractice() {
+        shadowingJob?.cancel()
+        shadowingJob = null
+        sentencePracticeMode = SentencePracticeMode.OFF
+        shadowingPhase = ShadowingPhase.IDLE
+    }
+
     private fun startTicker() {
         if (tickJob?.isActive == true) return
         tickJob = scope.launch {
@@ -269,6 +354,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
                 positionMs = player.currentPosition.coerceAtLeast(0L)
                 val d = player.duration
                 if (d > 0) durationMs = d
+                updateActiveSentenceAndPracticeBoundary()
                 delay(250)
             }
         }
@@ -281,6 +367,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
 
     override fun onCleared() {
         analysisJob?.cancel()
+        shadowingJob?.cancel()
         stopTicker()
         player.release()
         scope.cancel()
@@ -291,9 +378,53 @@ class NcePlayerVm(context: Context) : ViewModel() {
         .indexOfLast { it.startMs <= positionMs }
         .coerceAtLeast(0)
 
+    private fun updateActiveSentenceAndPracticeBoundary() {
+        if (speechSegments.isEmpty()) return
+        if (sentencePracticeMode == SentencePracticeMode.OFF) {
+            activeSentenceIndex = segmentAtOrBefore(positionMs)
+            return
+        }
+        val segment = speechSegments.getOrNull(activeSentenceIndex) ?: return
+        if (positionMs < segment.endMs - SENTENCE_END_TOLERANCE_MS) return
+        when (sentencePracticeMode) {
+            SentencePracticeMode.REPEAT_ONE -> {
+                seekInternal(segment.startMs)
+                player.play()
+            }
+            SentencePracticeMode.SHADOWING -> {
+                if (shadowingPhase != ShadowingPhase.LISTENING) return
+                shadowingPhase = ShadowingPhase.SPEAKING
+                player.pause()
+                val expectedLesson = currentIndex
+                val pauseMs = ((segment.endMs - segment.startMs) * SHADOWING_PAUSE_MULTIPLIER)
+                    .toLong()
+                    .coerceIn(MIN_SHADOWING_PAUSE_MS, MAX_SHADOWING_PAUSE_MS)
+                shadowingJob?.cancel()
+                shadowingJob = scope.launch {
+                    delay(pauseMs)
+                    if (sentencePracticeMode != SentencePracticeMode.SHADOWING ||
+                        currentIndex != expectedLesson
+                    ) return@launch
+                    val next = activeSentenceIndex + 1
+                    if (next !in speechSegments.indices) {
+                        cancelSentencePractice()
+                        return@launch
+                    }
+                    activeSentenceIndex = next
+                    shadowingPhase = ShadowingPhase.LISTENING
+                    seekInternal(speechSegments[next].startMs)
+                    player.play()
+                }
+            }
+            SentencePracticeMode.OFF -> Unit
+        }
+    }
+
     private fun analyzeCurrentSentenceBoundaries() {
         analysisJob?.cancel()
+        cancelSentencePractice()
         speechSegments = emptyList()
+        activeSentenceIndex = -1
         val expectedIndex = currentIndex
         val mediaPath = resolvedPaths.getOrNull(expectedIndex)
         if (mediaPath.isNullOrBlank()) {
@@ -307,6 +438,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
             result.exceptionOrNull()?.let { Log.w("NcePlayerVm", "离线语音分析失败", it) }
             speechSegments = result.getOrDefault(emptyList())
             sentenceAnalysisState = if (speechSegments.isNotEmpty()) {
+                activeSentenceIndex = segmentAtOrBefore(player.currentPosition)
                 SentenceAnalysisState.READY
             } else {
                 SentenceAnalysisState.FAILED
@@ -317,6 +449,10 @@ class NcePlayerVm(context: Context) : ViewModel() {
     companion object {
         private const val FALLBACK_SEEK_MS = 8_000L
         private const val RESTART_CURRENT_AFTER_MS = 1_500L
+        private const val SENTENCE_END_TOLERANCE_MS = 60L
+        private const val MIN_SHADOWING_PAUSE_MS = 2_000L
+        private const val MAX_SHADOWING_PAUSE_MS = 8_000L
+        private const val SHADOWING_PAUSE_MULTIPLIER = 1.2
     }
 
     /**

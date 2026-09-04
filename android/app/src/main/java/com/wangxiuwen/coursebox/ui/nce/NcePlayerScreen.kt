@@ -6,6 +6,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -311,36 +314,150 @@ private fun SliderRow(vm: NcePlayerVm) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SentenceTransportRow(vm: NcePlayerVm) {
+    var showSentenceList by rememberSaveable { mutableStateOf(false) }
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
         Row(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(
+                modifier = Modifier.weight(1f),
+                onClick = { showSentenceList = true },
+                enabled = vm.speechSegments.isNotEmpty(),
+                contentPadding = PaddingValues(horizontal = 2.dp),
+                colors = ButtonDefaults.textButtonColors(contentColor = OnDark),
+            ) { Text("句子", style = MaterialTheme.typography.labelLarge) }
+            TextButton(
+                modifier = Modifier.weight(1f),
                 onClick = vm::playPreviousSentence,
+                contentPadding = PaddingValues(horizontal = 2.dp),
                 colors = ButtonDefaults.textButtonColors(contentColor = OnDark),
-            ) { Text("上一句") }
+            ) { Text("上一句", style = MaterialTheme.typography.labelLarge) }
             TextButton(
+                modifier = Modifier.weight(1f),
                 onClick = vm::replayCurrentSentence,
+                contentPadding = PaddingValues(horizontal = 2.dp),
                 colors = ButtonDefaults.textButtonColors(contentColor = PlayerAccent),
-            ) { Text("重听") }
+            ) { Text("重听", style = MaterialTheme.typography.labelLarge) }
             TextButton(
+                modifier = Modifier.weight(1f),
                 onClick = vm::playNextSentence,
+                contentPadding = PaddingValues(horizontal = 2.dp),
                 colors = ButtonDefaults.textButtonColors(contentColor = OnDark),
-            ) { Text("下一句") }
+            ) { Text("下一句", style = MaterialTheme.typography.labelLarge) }
+            TextButton(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(
+                        if (vm.sentencePracticeMode == SentencePracticeMode.SHADOWING) PlayerAccent
+                        else Color.Transparent,
+                    ),
+                onClick = vm::toggleShadowing,
+                enabled = vm.speechSegments.isNotEmpty(),
+                contentPadding = PaddingValues(horizontal = 2.dp),
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = if (vm.sentencePracticeMode == SentencePracticeMode.SHADOWING) {
+                        ScreenBlack
+                    } else {
+                        OnDark
+                    },
+                ),
+            ) { Text("跟读", style = MaterialTheme.typography.labelLarge) }
         }
         Text(
-            when (vm.sentenceAnalysisState) {
-                SentenceAnalysisState.ANALYZING -> "正在离线分析语音…按钮暂按 8 秒跳转"
-                SentenceAnalysisState.READY -> "已识别 ${vm.speechSegments.size} 个语音片段"
-                SentenceAnalysisState.FAILED -> "未识别到语音，按钮按 8 秒跳转"
-                SentenceAnalysisState.IDLE -> ""
+            when {
+                vm.sentencePracticeMode == SentencePracticeMode.REPEAT_ONE ->
+                    "正在循环第 ${vm.activeSentenceIndex + 1} 句"
+                vm.sentencePracticeMode == SentencePracticeMode.SHADOWING &&
+                    vm.shadowingPhase == ShadowingPhase.SPEAKING ->
+                    "第 ${vm.activeSentenceIndex + 1} 句：现在跟读，稍后自动播放下一句"
+                vm.sentencePracticeMode == SentencePracticeMode.SHADOWING ->
+                    "第 ${vm.activeSentenceIndex + 1} 句：听原音"
+                vm.sentenceAnalysisState == SentenceAnalysisState.ANALYZING ->
+                    "正在离线分析语音…按钮暂按 8 秒跳转"
+                vm.sentenceAnalysisState == SentenceAnalysisState.READY ->
+                    "已识别 ${vm.speechSegments.size} 个语音片段"
+                vm.sentenceAnalysisState == SentenceAnalysisState.FAILED ->
+                    "未识别到语音，按钮按 8 秒跳转"
+                else -> ""
             },
             color = OnDarkFaint,
             style = MaterialTheme.typography.labelSmall,
         )
+    }
+
+    if (showSentenceList) {
+        SentenceListSheet(vm = vm, onDismiss = { showSentenceList = false })
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(vm.activeSentenceIndex) {
+        if (vm.activeSentenceIndex in vm.speechSegments.indices) {
+            listState.animateScrollToItem(vm.activeSentenceIndex)
+        }
+    }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.82f)
+                .padding(horizontal = 18.dp),
+        ) {
+            Text("句子列表", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "按实际录音中的停顿切分；点一句播放，点“循环”反复听这一句。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+            )
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                itemsIndexed(
+                    items = vm.speechSegments,
+                    key = { index, segment -> "${index}_${segment.startMs}" },
+                ) { index, segment ->
+                    val active = index == vm.activeSentenceIndex
+                    val repeating = active &&
+                        vm.sentencePracticeMode == SentencePracticeMode.REPEAT_ONE
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (active) MaterialTheme.colorScheme.primaryContainer
+                                else Color.Transparent,
+                            )
+                            .clickable { vm.playSentence(index) }
+                            .padding(start = 14.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "第 ${index + 1} 句",
+                                fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                            )
+                            Text(
+                                "${fmtTime(segment.startMs)} – ${fmtTime(segment.endMs)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { vm.toggleRepeatSentence(index) }) {
+                            Text(if (repeating) "停止" else "循环")
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+                item { Spacer(Modifier.height(24.dp)) }
+            }
+        }
     }
 }
 
