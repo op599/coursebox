@@ -421,13 +421,12 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color(0x18FFFFFF))
-                    .padding(horizontal = 14.dp, vertical = 3.dp),
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("跟读", fontWeight = FontWeight.Medium)
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
                 Switch(
                     checked = vm.sentencePracticeMode == SentencePracticeMode.SHADOWING,
                     onCheckedChange = { enabled ->
