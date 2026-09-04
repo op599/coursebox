@@ -335,16 +335,29 @@ class NcePlayerVm(context: Context) : ViewModel() {
 
     /** Listen to one sentence, pause for the learner to repeat it, then advance. */
     fun toggleShadowing() {
-        if (sentencePracticeMode == SentencePracticeMode.SHADOWING) {
-            finishSentencePracticeAndContinue()
-            return
-        }
         val index = when {
             activeSentenceIndex in speechSegments.indices -> activeSentenceIndex
             speechSegments.isNotEmpty() -> segmentAtOrBefore(player.currentPosition)
             else -> return
         }
-        startShadowingAt(index)
+        setShadowingEnabled(sentencePracticeMode != SentencePracticeMode.SHADOWING, index)
+    }
+
+    /** Shadowing is a switch inside a fixed sentence drill. Turning it off
+     * returns to looping the same sentence; only closing the sheet advances. */
+    fun setShadowingEnabled(enabled: Boolean, index: Int) {
+        val segment = speechSegments.getOrNull(index) ?: return
+        if (enabled) {
+            startShadowingAt(index)
+        } else {
+            shadowingJob?.cancel()
+            shadowingJob = null
+            sentencePracticeMode = SentencePracticeMode.REPEAT_ONE
+            shadowingPhase = ShadowingPhase.IDLE
+            activeSentenceIndex = index
+            seekInternal(segment.startMs)
+            player.play()
+        }
     }
 
     /** Select a sentence from the sheet using the active practice mode.
@@ -463,14 +476,10 @@ class NcePlayerVm(context: Context) : ViewModel() {
                     if (sentencePracticeMode != SentencePracticeMode.SHADOWING ||
                         currentIndex != expectedLesson
                     ) return@launch
-                    val next = activeSentenceIndex + 1
-                    if (next !in speechSegments.indices) {
-                        cancelSentencePractice()
-                        return@launch
-                    }
-                    activeSentenceIndex = next
+                    // Keep drilling the same manually selected sentence.
+                    // Advancing belongs exclusively to closing the sheet.
                     shadowingPhase = ShadowingPhase.LISTENING
-                    seekInternal(speechSegments[next].startMs)
+                    seekInternal(speechSegments[activeSentenceIndex].startMs)
                     player.play()
                 }
             }

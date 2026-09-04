@@ -326,49 +326,30 @@ private fun SentenceTransportRow(vm: NcePlayerVm) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1.2f),
                 onClick = { showSentenceList = true },
                 enabled = vm.speechSegments.isNotEmpty(),
                 contentPadding = PaddingValues(horizontal = 2.dp),
                 colors = ButtonDefaults.textButtonColors(contentColor = OnDark),
             ) { Text("句子", style = MaterialTheme.typography.labelLarge) }
             TextButton(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1.2f),
                 onClick = vm::playPreviousSentence,
                 contentPadding = PaddingValues(horizontal = 2.dp),
                 colors = ButtonDefaults.textButtonColors(contentColor = OnDark),
             ) { Text("上一句", style = MaterialTheme.typography.labelLarge) }
             TextButton(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1.2f),
                 onClick = vm::replayCurrentSentence,
                 contentPadding = PaddingValues(horizontal = 2.dp),
                 colors = ButtonDefaults.textButtonColors(contentColor = PlayerAccent),
             ) { Text("重听", style = MaterialTheme.typography.labelLarge) }
             TextButton(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1.2f),
                 onClick = vm::playNextSentence,
                 contentPadding = PaddingValues(horizontal = 2.dp),
                 colors = ButtonDefaults.textButtonColors(contentColor = OnDark),
             ) { Text("下一句", style = MaterialTheme.typography.labelLarge) }
-            TextButton(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(
-                        if (vm.sentencePracticeMode == SentencePracticeMode.SHADOWING) PlayerAccent
-                        else Color.Transparent,
-                    ),
-                onClick = vm::toggleShadowing,
-                enabled = vm.speechSegments.isNotEmpty(),
-                contentPadding = PaddingValues(horizontal = 2.dp),
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = if (vm.sentencePracticeMode == SentencePracticeMode.SHADOWING) {
-                        ScreenBlack
-                    } else {
-                        OnDark
-                    },
-                ),
-            ) { Text("跟读", style = MaterialTheme.typography.labelLarge) }
         }
         Text(
             when {
@@ -407,12 +388,15 @@ private fun SentenceTransportRow(vm: NcePlayerVm) {
 @Composable
 private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
     val listState = rememberLazyListState()
+    var selectedIndex by remember {
+        mutableIntStateOf(vm.activeSentenceIndex.coerceAtLeast(0))
+    }
     // Position once when the sheet opens. Do not observe activeSentenceIndex:
     // tapping a row or ordinary playback must never pull that row to the top
     // while the learner is browsing the list.
     LaunchedEffect(Unit) {
-        if (vm.activeSentenceIndex in vm.speechSegments.indices) {
-            listState.scrollToItem(vm.activeSentenceIndex)
+        if (selectedIndex in vm.speechSegments.indices) {
+            listState.scrollToItem(selectedIndex)
         }
     }
     ModalBottomSheet(
@@ -429,19 +413,39 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
         ) {
             Text("句子列表", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(
-                "选择练习方式，再点一句开始；未选择时点句子默认单句循环。",
+                "点一句持续循环；打开跟读后仍只练这一句。关闭列表再继续下一句。",
                 style = MaterialTheme.typography.bodySmall,
                 color = OnDarkDim,
                 modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
             )
-            PracticeModeSelector(vm)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0x18FFFFFF))
+                    .padding(horizontal = 14.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("跟读", fontWeight = FontWeight.Medium)
+                Spacer(Modifier.weight(1f))
+                Switch(
+                    checked = vm.sentencePracticeMode == SentencePracticeMode.SHADOWING,
+                    onCheckedChange = { enabled ->
+                        vm.setShadowingEnabled(enabled, selectedIndex)
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = ScreenBlack,
+                        checkedTrackColor = PlayerAccent,
+                    ),
+                )
+            }
             Spacer(Modifier.height(10.dp))
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 itemsIndexed(
                     items = vm.speechSegments,
                     key = { index, segment -> "${index}_${segment.startMs}" },
                 ) { index, segment ->
-                    val active = index == vm.activeSentenceIndex
+                    val active = index == selectedIndex
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -450,7 +454,10 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
                                 if (active) PlayerAccent.copy(alpha = 0.18f)
                                 else Color.Transparent,
                             )
-                            .clickable { vm.selectSentenceForPractice(index) }
+                            .clickable {
+                                selectedIndex = index
+                                vm.selectSentenceForPractice(index)
+                            }
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -467,10 +474,13 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
                         }
                         if (active) {
                             Text(
-                                when (vm.sentencePracticeMode) {
+                                when {
+                                    index != vm.activeSentenceIndex -> "已选择"
+                                    else -> when (vm.sentencePracticeMode) {
                                     SentencePracticeMode.REPEAT_ONE -> "循环中"
                                     SentencePracticeMode.SHADOWING -> "跟读中"
                                     SentencePracticeMode.OFF -> "播放中"
+                                    }
                                 },
                                 color = PlayerAccent,
                                 style = MaterialTheme.typography.labelMedium,
@@ -486,52 +496,6 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
     }
 }
 
-@Composable
-private fun PracticeModeSelector(vm: NcePlayerVm) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(Color(0x22FFFFFF))
-            .padding(3.dp),
-    ) {
-        PracticeModeButton(
-            label = "单句循环",
-            selected = vm.sentencePracticeMode == SentencePracticeMode.REPEAT_ONE,
-            modifier = Modifier.weight(1f),
-            onClick = {
-                val index = vm.activeSentenceIndex.coerceAtLeast(0)
-                vm.toggleRepeatSentence(index)
-            },
-        )
-        PracticeModeButton(
-            label = "跟读",
-            selected = vm.sentencePracticeMode == SentencePracticeMode.SHADOWING,
-            modifier = Modifier.weight(1f),
-            onClick = vm::toggleShadowing,
-        )
-    }
-}
-
-@Composable
-private fun PracticeModeButton(
-    label: String,
-    selected: Boolean,
-    modifier: Modifier,
-    onClick: () -> Unit,
-) {
-    TextButton(
-        modifier = modifier
-            .clip(RoundedCornerShape(15.dp))
-            .background(if (selected) PlayerAccent else Color.Transparent),
-        onClick = onClick,
-        colors = ButtonDefaults.textButtonColors(
-            contentColor = if (selected) ScreenBlack else OnDark,
-        ),
-    ) {
-        Text(label, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
-    }
-}
 
 @Composable
 private fun TransportRow(vm: NcePlayerVm) {
