@@ -399,12 +399,20 @@ private fun SentenceTransportRow(vm: NcePlayerVm) {
 @Composable
 private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
     val listState = rememberLazyListState()
-    LaunchedEffect(vm.activeSentenceIndex) {
+    // Position once when the sheet opens. Do not observe activeSentenceIndex:
+    // tapping a row or ordinary playback must never pull that row to the top
+    // while the learner is browsing the list.
+    LaunchedEffect(Unit) {
         if (vm.activeSentenceIndex in vm.speechSegments.indices) {
-            listState.animateScrollToItem(vm.activeSentenceIndex)
+            listState.scrollToItem(vm.activeSentenceIndex)
         }
     }
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF111827),
+        contentColor = OnDark,
+        dragHandle = { BottomSheetDefaults.DragHandle(color = OnDarkFaint) },
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -413,9 +421,9 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
         ) {
             Text("句子列表", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(
-                "按实际录音中的停顿切分；点一句播放，点“循环”反复听这一句。",
+                "按实际录音中的停顿切分；点一句立即循环，再点一次停止。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = OnDarkDim,
                 modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
             )
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
@@ -431,10 +439,10 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(
-                                if (active) MaterialTheme.colorScheme.primaryContainer
+                                if (active) PlayerAccent.copy(alpha = 0.18f)
                                 else Color.Transparent,
                             )
-                            .clickable { vm.playSentence(index) }
+                            .clickable { vm.toggleRepeatSentence(index) }
                             .padding(start = 14.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -446,10 +454,18 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
                             Text(
                                 "${fmtTime(segment.startMs)} – ${fmtTime(segment.endMs)}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = OnDarkDim,
                             )
                         }
-                        TextButton(onClick = { vm.toggleRepeatSentence(index) }) {
+                        TextButton(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (repeating) PlayerAccent else Color.Transparent),
+                            onClick = { vm.toggleRepeatSentence(index) },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = if (repeating) ScreenBlack else PlayerAccent,
+                            ),
+                        ) {
                             Text(if (repeating) "停止" else "循环")
                         }
                     }
