@@ -114,7 +114,19 @@ class NcePlayerVm(context: Context) : ViewModel() {
         p.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
-                if (playing) startTicker() else stopTicker()
+                if (playing) {
+                    startTicker()
+                } else {
+                    // A learner usually pauses because the current sentence
+                    // needs attention. Capture the exact pause position so
+                    // loop/shadowing starts from that sentence, rather than
+                    // the ticker's value from up to 250 ms earlier.
+                    positionMs = p.currentPosition.coerceAtLeast(0L)
+                    if (sentencePracticeMode == SentencePracticeMode.OFF && speechSegments.isNotEmpty()) {
+                        activeSentenceIndex = segmentAtOrBefore(positionMs)
+                    }
+                    stopTicker()
+                }
             }
             override fun onPlaybackStateChanged(state: Int) {
                 isBuffering = state == Player.STATE_BUFFERING
@@ -310,7 +322,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
     fun toggleRepeatSentence(index: Int) {
         val segment = speechSegments.getOrNull(index) ?: return
         if (sentencePracticeMode == SentencePracticeMode.REPEAT_ONE && activeSentenceIndex == index) {
-            cancelSentencePractice()
+            finishSentencePracticeAndContinue()
             return
         }
         shadowingJob?.cancel()
@@ -324,7 +336,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
     /** Listen to one sentence, pause for the learner to repeat it, then advance. */
     fun toggleShadowing() {
         if (sentencePracticeMode == SentencePracticeMode.SHADOWING) {
-            cancelSentencePractice()
+            finishSentencePracticeAndContinue()
             return
         }
         val index = when {
@@ -332,11 +344,27 @@ class NcePlayerVm(context: Context) : ViewModel() {
             speechSegments.isNotEmpty() -> segmentAtOrBefore(player.currentPosition)
             else -> return
         }
+        startShadowingAt(index)
+    }
+
+    /** Select a sentence from the sheet using the active practice mode.
+     * With no explicit mode selected, sentence selection defaults to looping. */
+    fun selectSentenceForPractice(index: Int) {
+        when (sentencePracticeMode) {
+            SentencePracticeMode.SHADOWING -> startShadowingAt(index)
+            SentencePracticeMode.OFF,
+            SentencePracticeMode.REPEAT_ONE,
+            -> toggleRepeatSentence(index)
+        }
+    }
+
+    private fun startShadowingAt(index: Int) {
+        val segment = speechSegments.getOrNull(index) ?: return
         shadowingJob?.cancel()
         sentencePracticeMode = SentencePracticeMode.SHADOWING
         shadowingPhase = ShadowingPhase.LISTENING
         activeSentenceIndex = index
-        seekInternal(speechSegments[index].startMs)
+        seekInternal(segment.startMs)
         player.play()
     }
 
@@ -345,6 +373,36 @@ class NcePlayerVm(context: Context) : ViewModel() {
         shadowingJob = null
         sentencePracticeMode = SentencePracticeMode.OFF
         shadowingPhase = ShadowingPhase.IDLE
+    }
+
+    /** Leave the temporary sentence drill and resume the lesson after it. */
+    fun finishSentencePracticeAndContinue() {
+        val completed = activeSentenceIndex
+        cancelSentencePractice()
+        val next = speechSegments.getOrNull(completed + 1)
+        if (next != null) {
+            activeSentenceIndex = completed + 1
+            seekInternal(next.startMs)
+        } else {
+            // Let ExoPlayer finish the tail of the lesson. Its independent
+            // whole-lesson repeat setting decides whether to loop or advance.
+            speechSegments.getOrNull(completed)?.let { seekInternal(it.endMs) }
+        }
+        player.play()
+    }
+
+    /** Whole-lesson repeat is independent from the temporary sentence drill. */
+    fun toggleLessonRepeat() {
+        repeatChoice = if (repeatChoice == RepeatModeChoice.ONE) {
+            RepeatModeChoice.ALL
+        } else {
+            RepeatModeChoice.ONE
+        }
+        player.repeatMode = if (repeatChoice == RepeatModeChoice.ONE) {
+            Player.REPEAT_MODE_ONE
+        } else {
+            Player.REPEAT_MODE_ALL
+        }
     }
 
     private fun startTicker() {

@@ -21,6 +21,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.*
@@ -391,7 +393,13 @@ private fun SentenceTransportRow(vm: NcePlayerVm) {
     }
 
     if (showSentenceList) {
-        SentenceListSheet(vm = vm, onDismiss = { showSentenceList = false })
+        SentenceListSheet(
+            vm = vm,
+            onDismiss = {
+                vm.finishSentencePracticeAndContinue()
+                showSentenceList = false
+            },
+        )
     }
 }
 
@@ -421,19 +429,19 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
         ) {
             Text("句子列表", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(
-                "按实际录音中的停顿切分；点一句立即循环，再点一次停止。",
+                "选择练习方式，再点一句开始；未选择时点句子默认单句循环。",
                 style = MaterialTheme.typography.bodySmall,
                 color = OnDarkDim,
-                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
             )
+            PracticeModeSelector(vm)
+            Spacer(Modifier.height(10.dp))
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 itemsIndexed(
                     items = vm.speechSegments,
                     key = { index, segment -> "${index}_${segment.startMs}" },
                 ) { index, segment ->
                     val active = index == vm.activeSentenceIndex
-                    val repeating = active &&
-                        vm.sentencePracticeMode == SentencePracticeMode.REPEAT_ONE
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -442,8 +450,8 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
                                 if (active) PlayerAccent.copy(alpha = 0.18f)
                                 else Color.Transparent,
                             )
-                            .clickable { vm.toggleRepeatSentence(index) }
-                            .padding(start = 14.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+                            .clickable { vm.selectSentenceForPractice(index) }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
@@ -457,16 +465,17 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
                                 color = OnDarkDim,
                             )
                         }
-                        TextButton(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(if (repeating) PlayerAccent else Color.Transparent),
-                            onClick = { vm.toggleRepeatSentence(index) },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = if (repeating) ScreenBlack else PlayerAccent,
-                            ),
-                        ) {
-                            Text(if (repeating) "停止" else "循环")
+                        if (active) {
+                            Text(
+                                when (vm.sentencePracticeMode) {
+                                    SentencePracticeMode.REPEAT_ONE -> "循环中"
+                                    SentencePracticeMode.SHADOWING -> "跟读中"
+                                    SentencePracticeMode.OFF -> "播放中"
+                                },
+                                color = PlayerAccent,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
                         }
                     }
                     Spacer(Modifier.height(4.dp))
@@ -474,6 +483,53 @@ private fun SentenceListSheet(vm: NcePlayerVm, onDismiss: () -> Unit) {
                 item { Spacer(Modifier.height(24.dp)) }
             }
         }
+    }
+}
+
+@Composable
+private fun PracticeModeSelector(vm: NcePlayerVm) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0x22FFFFFF))
+            .padding(3.dp),
+    ) {
+        PracticeModeButton(
+            label = "单句循环",
+            selected = vm.sentencePracticeMode == SentencePracticeMode.REPEAT_ONE,
+            modifier = Modifier.weight(1f),
+            onClick = {
+                val index = vm.activeSentenceIndex.coerceAtLeast(0)
+                vm.toggleRepeatSentence(index)
+            },
+        )
+        PracticeModeButton(
+            label = "跟读",
+            selected = vm.sentencePracticeMode == SentencePracticeMode.SHADOWING,
+            modifier = Modifier.weight(1f),
+            onClick = vm::toggleShadowing,
+        )
+    }
+}
+
+@Composable
+private fun PracticeModeButton(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
+    TextButton(
+        modifier = modifier
+            .clip(RoundedCornerShape(15.dp))
+            .background(if (selected) PlayerAccent else Color.Transparent),
+        onClick = onClick,
+        colors = ButtonDefaults.textButtonColors(
+            contentColor = if (selected) ScreenBlack else OnDark,
+        ),
+    ) {
+        Text(label, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
     }
 }
 
@@ -486,6 +542,22 @@ private fun TransportRow(vm: NcePlayerVm) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        IconButton(onClick = vm::toggleLessonRepeat) {
+            Icon(
+                if (vm.repeatChoice == RepeatModeChoice.ONE) {
+                    Icons.Default.RepeatOne
+                } else {
+                    Icons.Default.Repeat
+                },
+                contentDescription = if (vm.repeatChoice == RepeatModeChoice.ONE) {
+                    "关闭整篇循环"
+                } else {
+                    "开启整篇循环"
+                },
+                tint = if (vm.repeatChoice == RepeatModeChoice.ONE) PlayerAccent else OnDarkDim,
+                modifier = Modifier.size(28.dp),
+            )
+        }
         IconButton(onClick = { vm.playPrev() }, enabled = canPrev) {
             Icon(
                 Icons.Default.SkipPrevious,
@@ -525,6 +597,8 @@ private fun TransportRow(vm: NcePlayerVm) {
                 modifier = Modifier.size(48.dp),
             )
         }
+        // Balances the whole-lesson repeat button so play stays centered.
+        Spacer(Modifier.size(48.dp))
     }
 }
 
