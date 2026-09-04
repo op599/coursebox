@@ -1,6 +1,7 @@
 package com.wangxiuwen.coursebox.ui.nce
 
 import android.content.Context
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +52,11 @@ class NcePlayerVm(context: Context) : ViewModel() {
     var showBack: Boolean by mutableStateOf(false)
         private set
 
+    var speechSegments: List<SpeechSegment> by mutableStateOf(emptyList())
+        private set
+    var sentenceAnalysisState: SentenceAnalysisState by mutableStateOf(SentenceAnalysisState.IDLE)
+        private set
+
     /** Which course package the current playlist belongs to; lets the
      * mini player navigate back to the right player screen. */
     var currentPackageId: String? by mutableStateOf(null)
@@ -71,16 +77,21 @@ class NcePlayerVm(context: Context) : ViewModel() {
     val current: NceLesson? get() = playlist.getOrNull(currentIndex)
 
     fun stopAndClear() {
+        analysisJob?.cancel()
         player.stop()
         player.clearMediaItems()
         playlist = emptyList()
         currentPackageId = null
         positionMs = 0L
         durationMs = 0L
+        speechSegments = emptyList()
+        sentenceAnalysisState = SentenceAnalysisState.IDLE
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var tickJob: Job? = null
+    private var analysisJob: Job? = null
+    private val voiceActivityAnalyzer = VoiceActivityAnalyzer(appCtx)
 
     private val player: ExoPlayer = ExoPlayer.Builder(appCtx)
         .setMediaSourceFactory(
@@ -109,6 +120,7 @@ class NcePlayerVm(context: Context) : ViewModel() {
                 // synchronously on lesson change, not on the first decoded
                 // video frame. onVideoSizeChanged still refines the aspect.
                 hasVideo = playlist.getOrNull(currentIndex)?.isVideo == true
+                analyzeCurrentSentenceBoundaries()
             }
             override fun onVideoSizeChanged(size: VideoSize) {
                 if (size.width > 0 && size.height > 0) {
@@ -175,15 +187,56 @@ class NcePlayerVm(context: Context) : ViewModel() {
         // shows the SurfaceView before the first video frame decodes.
         hasVideo = lessons.getOrNull(startIndex)?.isVideo == true
         player.prepare()
+        analyzeCurrentSentenceBoundaries()
     }
 
     fun togglePlayPause() {
         if (player.isPlaying) player.pause() else player.play()
     }
 
-    fun seekTo(ms: Long) { player.seekTo(ms) }
+    fun seekTo(ms: Long) {
+        val target = ms.coerceAtLeast(0L)
+        player.seekTo(target)
+        positionMs = target
+    }
     fun playNext() { if (player.hasNextMediaItem()) player.seekToNextMediaItem() }
     fun playPrev() { if (player.hasPreviousMediaItem()) player.seekToPreviousMediaItem() }
+
+    /** Restart the current spoken chunk; a second press near its start moves
+     * to the previous chunk. While VAD is still running, fall back to 8 s. */
+    fun playPreviousSentence() {
+        val segments = speechSegments
+        if (segments.isEmpty()) {
+            seekTo(player.currentPosition - FALLBACK_SEEK_MS)
+            return
+        }
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val index = segmentAtOrBefore(position)
+        val currentStart = segments[index].startMs
+        val target = if (position - currentStart > RESTART_CURRENT_AFTER_MS) {
+            currentStart
+        } else {
+            segments[(index - 1).coerceAtLeast(0)].startMs
+        }
+        seekTo(target)
+    }
+
+    fun replayCurrentSentence() {
+        if (speechSegments.isEmpty()) {
+            seekTo(player.currentPosition - FALLBACK_SEEK_MS)
+        } else {
+            seekTo(speechSegments[segmentAtOrBefore(player.currentPosition)].startMs)
+        }
+    }
+
+    fun playNextSentence() {
+        val next = speechSegments.firstOrNull { it.startMs > player.currentPosition + 250L }
+        when {
+            next != null -> seekTo(next.startMs)
+            player.hasNextMediaItem() -> player.seekToNextMediaItem()
+            else -> seekTo((player.currentPosition + FALLBACK_SEEK_MS).coerceAtMost(player.duration.coerceAtLeast(0L)))
+        }
+    }
     fun selectIndex(idx: Int) {
         if (idx in playlist.indices) {
             player.seekTo(idx, 0L)
@@ -227,10 +280,43 @@ class NcePlayerVm(context: Context) : ViewModel() {
     }
 
     override fun onCleared() {
+        analysisJob?.cancel()
         stopTicker()
         player.release()
         scope.cancel()
         super.onCleared()
+    }
+
+    private fun segmentAtOrBefore(positionMs: Long): Int = speechSegments
+        .indexOfLast { it.startMs <= positionMs }
+        .coerceAtLeast(0)
+
+    private fun analyzeCurrentSentenceBoundaries() {
+        analysisJob?.cancel()
+        speechSegments = emptyList()
+        val expectedIndex = currentIndex
+        val mediaPath = resolvedPaths.getOrNull(expectedIndex)
+        if (mediaPath.isNullOrBlank()) {
+            sentenceAnalysisState = SentenceAnalysisState.FAILED
+            return
+        }
+        sentenceAnalysisState = SentenceAnalysisState.ANALYZING
+        analysisJob = scope.launch {
+            val result = runCatching { voiceActivityAnalyzer.analyze(mediaPath) }
+            if (currentIndex != expectedIndex) return@launch
+            result.exceptionOrNull()?.let { Log.w("NcePlayerVm", "离线语音分析失败", it) }
+            speechSegments = result.getOrDefault(emptyList())
+            sentenceAnalysisState = if (speechSegments.isNotEmpty()) {
+                SentenceAnalysisState.READY
+            } else {
+                SentenceAnalysisState.FAILED
+            }
+        }
+    }
+
+    companion object {
+        private const val FALLBACK_SEEK_MS = 8_000L
+        private const val RESTART_CURRENT_AFTER_MS = 1_500L
     }
 
     /**

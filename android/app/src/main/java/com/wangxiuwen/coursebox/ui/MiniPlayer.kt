@@ -267,14 +267,14 @@ fun MiniPlayer(
                 Spacer(Modifier.width(4.dp))
                 Icon(
                     Icons.Default.SkipPrevious,
-                    contentDescription = "上一课",
+                    contentDescription = "上一句",
                     tint = Color(0xFF3B3B3B),
                     modifier = Modifier
                         .size(28.dp)
                         .combinedClickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                            onClick = { vm.playPrev() },
+                            onClick = { vm.playPreviousSentence() },
                         ),
                 )
                 Spacer(Modifier.width(6.dp))
@@ -334,14 +334,14 @@ fun MiniPlayer(
                 Spacer(Modifier.width(6.dp))
                 Icon(
                     Icons.Default.SkipNext,
-                    contentDescription = "下一课",
+                    contentDescription = "下一句",
                     tint = Color(0xFF3B3B3B),
                     modifier = Modifier
                         .size(28.dp)
                         .combinedClickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                            onClick = { vm.playNext() },
+                            onClick = { vm.playNextSentence() },
                         ),
                 )
             }

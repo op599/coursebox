@@ -250,7 +250,8 @@ private fun ColumnScope.PlayerFront(vm: NcePlayerVm, lesson: NceLesson, tone: Co
 
     Spacer(Modifier.height(if (isLandscape) 10.dp else 24.dp))
     SliderRow(vm)
-    Spacer(Modifier.height(8.dp))
+    SentenceTransportRow(vm)
+    Spacer(Modifier.height(2.dp))
     TransportRow(vm)
     Spacer(Modifier.weight(1f))
 
@@ -307,6 +308,39 @@ private fun SliderRow(vm: NcePlayerVm) {
             Text(fmtTime(effective), color = OnDarkFaint, style = MaterialTheme.typography.labelSmall)
             Text(fmtTime(duration), color = OnDarkFaint, style = MaterialTheme.typography.labelSmall)
         }
+    }
+}
+
+@Composable
+private fun SentenceTransportRow(vm: NcePlayerVm) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = vm::playPreviousSentence,
+                colors = ButtonDefaults.textButtonColors(contentColor = OnDark),
+            ) { Text("上一句") }
+            TextButton(
+                onClick = vm::replayCurrentSentence,
+                colors = ButtonDefaults.textButtonColors(contentColor = PlayerAccent),
+            ) { Text("重听") }
+            TextButton(
+                onClick = vm::playNextSentence,
+                colors = ButtonDefaults.textButtonColors(contentColor = OnDark),
+            ) { Text("下一句") }
+        }
+        Text(
+            when (vm.sentenceAnalysisState) {
+                SentenceAnalysisState.ANALYZING -> "正在离线分析语音…按钮暂按 8 秒跳转"
+                SentenceAnalysisState.READY -> "已识别 ${vm.speechSegments.size} 个语音片段"
+                SentenceAnalysisState.FAILED -> "未识别到语音，按钮按 8 秒跳转"
+                SentenceAnalysisState.IDLE -> ""
+            },
+            color = OnDarkFaint,
+            style = MaterialTheme.typography.labelSmall,
+        )
     }
 }
 

@@ -104,6 +104,14 @@ class CxDataSource : BaseDataSource(/* isNetwork = */ false) {
             return Uri.parse("$SCHEME:///$encPath/$encEntry")
         }
 
+        fun resolveEntry(uri: Uri): Pair<File, CxArchive.Entry> {
+            val (cxPath, entryName) = parseUri(uri)
+            val file = File(cxPath)
+            val entry = CxArchive.open(file).entryByName(entryName)
+                ?: throw java.io.IOException("entry not found in .cx: $entryName")
+            return file to entry
+        }
+
         private fun parseUri(uri: Uri): Pair<String, String> {
             require(uri.scheme == SCHEME) { "not a $SCHEME URI: $uri" }
             // After scheme://, path looks like "/<encPath>/<encEntry>"
